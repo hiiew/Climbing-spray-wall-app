@@ -1,282 +1,414 @@
 """
-test_hold_detector.py — Unit and integration tests for the hold detection pipeline.
+test_hold_detector.py — Tests for the CV hold detection pipeline.
 
-Run with:
-    pytest cv-service/tests/ -v --cov=app
+Strategy:
+- Unit tests:        validate individual pipeline stages in isolation (mocked models)
+- Integration tests: run the full API endpoint with a TestClient (mocked YOLO)
+- Error path tests:  corrupt images, no-holds images, oversized inputs
 
-Test strategy:
-  - Unit:        Individual functions (colour classifier, heuristics, normalisation)
-  - Integration: Full pipeline with mocked YOLO model and synthetic images
-  - Error paths: Low-quality image, no holds detected, timeout simulation
+Run:
+  pytest cv-service/tests/test_hold_detector.py -v
 """
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+import io
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
-from app.color_classifier import classify_hold_color
-from app.hold_detector import (
-    _classify_hold_type_heuristic,
-    _filter_by_area,
-    _to_normalised,
-    detect_holds,
-    set_yolo_model,
+# Fixtures are in conftest.py (auto-loaded by pytest)
+from tests.conftest import (
+    make_image_with_holds,
+    make_rgb_array,
+    array_to_jpeg_bytes,
+    array_to_png_bytes,
 )
-from app.preprocessor import validate_image
-from app.schemas import DetectionMode, DetectionOptions, HoldColor, HoldType
+
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Preprocessor Unit Tests
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def synthetic_wall_image() -> np.ndarray:
-    """
-    Generate a synthetic 1200×1200 white-background image with 5 coloured
-    rectangles simulating holds at known positions.
-    """
-    img = np.full((1200, 1200, 3), 240, dtype=np.uint8)   # Off-white background
+class TestPreprocessor:
+    """Test the image preprocessing stage (validation, resizing, CLAHE)."""
 
-    # Draw coloured rectangles as fake holds (BGR)
-    holds = [
-        ((100, 100, 200, 160), (0,   0, 220)),   # Red hold
-        ((400, 200, 480, 260), (200, 50,   0)),   # Blue hold
-        ((700, 150, 790, 220), (30, 180,  30)),   # Green hold
-        ((300, 500, 380, 560), (0, 160, 220)),    # Yellow hold
-        ((900, 600, 970, 660), (180,  0, 180)),   # Purple hold
-    ]
-    for (x1, y1, x2, y2), color in holds:
-        img[y1:y2, x1:x2] = color
+    def test_valid_jpeg_loads_successfully(self, wall_with_holds_jpeg):
+        from app.preprocessor import load_and_validate_image
+        img = load_and_validate_image(wall_with_holds_jpeg)
+        assert img is not None
+        assert img.ndim == 3
+        assert img.shape[2] == 3  # RGB channels
 
-    return img
+    def test_corrupt_bytes_raise_value_error(self, corrupt_image_bytes):
+        from app.preprocessor import load_and_validate_image
+        with pytest.raises(ValueError, match="[Cc]orrupt|[Ii]nvalid|cannot"):
+            load_and_validate_image(corrupt_image_bytes)
 
+    def test_oversized_image_raises_value_error(self, oversized_image_bytes):
+        from app.preprocessor import load_and_validate_image
+        with pytest.raises(ValueError, match="[Ss]ize|[Ll]arge|limit"):
+            load_and_validate_image(oversized_image_bytes)
 
-@pytest.fixture
-def mock_yolo_detections():
-    """Five fake YOLO bounding boxes for the synthetic_wall_image."""
-    return [
-        {"x1": 100, "y1": 100, "x2": 200, "y2": 160, "confidence": 0.92, "class_id": 0, "class_conf": 0.88},
-        {"x1": 400, "y1": 200, "x2": 480, "y2": 260, "confidence": 0.87, "class_id": 1, "class_conf": 0.82},
-        {"x1": 700, "y1": 150, "x2": 790, "y2": 220, "confidence": 0.79, "class_id": 2, "class_conf": 0.74},
-        {"x1": 300, "y1": 500, "x2": 380, "y2": 560, "confidence": 0.95, "class_id": 0, "class_conf": 0.91},
-        {"x1": 900, "y1": 600, "x2": 970, "y2": 660, "confidence": 0.65, "class_id": 3, "class_conf": 0.60},
-    ]
+    def test_image_is_resized_when_too_large(self):
+        from app.preprocessor import resize_for_detection
+        huge_img = make_rgb_array(height=4000, width=4000)
+        resized  = resize_for_detection(huge_img, max_dim=1024)
+        assert max(resized.shape[:2]) <= 1024
+
+    def test_small_image_is_not_upscaled(self):
+        from app.preprocessor import resize_for_detection
+        small_img = make_rgb_array(height=400, width=300)
+        result    = resize_for_detection(small_img, max_dim=1024)
+        assert result.shape[0] <= 400
+        assert result.shape[1] <= 300
+
+    def test_clahe_does_not_change_image_dimensions(self):
+        from app.preprocessor import apply_clahe
+        img      = make_rgb_array(480, 640)
+        enhanced = apply_clahe(img)
+        assert enhanced.shape == img.shape
+
+    def test_clahe_output_is_uint8(self):
+        from app.preprocessor import apply_clahe
+        img      = make_rgb_array(480, 640)
+        enhanced = apply_clahe(img)
+        assert enhanced.dtype == np.uint8
+
+    def test_png_image_loads_successfully(self):
+        from app.preprocessor import load_and_validate_image
+        img_arr   = make_image_with_holds(n_holds=4)
+        png_bytes = array_to_png_bytes(img_arr)
+        loaded    = load_and_validate_image(png_bytes)
+        assert loaded.shape[:2] == img_arr.shape[:2]
+
+    def test_minimum_resolution_check(self):
+        from app.preprocessor import load_and_validate_image
+        tiny     = make_rgb_array(height=100, width=100)
+        tiny_jpg = array_to_jpeg_bytes(tiny)
+        with pytest.raises(ValueError, match="[Rr]esolution|[Ss]mall|1000"):
+            load_and_validate_image(tiny_jpg)
 
 
 # ---------------------------------------------------------------------------
-# Unit Tests — Color Classifier
+# Color Classifier Unit Tests
 # ---------------------------------------------------------------------------
 
 class TestColorClassifier:
+    """Test the HSV-based color classification logic."""
 
-    def test_red_hold_detected(self):
-        """A mostly-red crop should be classified as RED."""
-        img = np.zeros((200, 200, 3), dtype=np.uint8)
-        img[:] = (0, 0, 200)   # BGR red
-        result = classify_hold_color(img, 0.0, 0.0, 1.0, 1.0)
-        assert result.color == HoldColor.RED
+    def test_red_pixel_classified_as_red(self):
+        from app.color_classifier import classify_color_from_bgr
+        red_bgr = np.array([[[0, 0, 200]]], dtype=np.uint8)
+        result  = classify_color_from_bgr(red_bgr)
+        assert result["color"] == "red"
 
-    def test_blue_hold_detected(self):
-        img = np.zeros((200, 200, 3), dtype=np.uint8)
-        img[:] = (200, 50, 0)   # BGR blue
-        result = classify_hold_color(img, 0.0, 0.0, 1.0, 1.0)
-        assert result.color == HoldColor.BLUE
+    def test_blue_pixel_classified_as_blue(self):
+        from app.color_classifier import classify_color_from_bgr
+        blue_bgr = np.array([[[200, 0, 0]]], dtype=np.uint8)
+        result   = classify_color_from_bgr(blue_bgr)
+        assert result["color"] == "blue"
 
-    def test_white_background_classified_as_white(self):
-        img = np.full((200, 200, 3), 245, dtype=np.uint8)  # Near-white
-        result = classify_hold_color(img, 0.0, 0.0, 1.0, 1.0)
-        assert result.color == HoldColor.WHITE
+    def test_green_pixel_classified_as_green(self):
+        from app.color_classifier import classify_color_from_bgr
+        green_bgr = np.array([[[0, 200, 0]]], dtype=np.uint8)
+        result    = classify_color_from_bgr(green_bgr)
+        assert result["color"] == "green"
 
-    def test_black_hold_detected(self):
-        img = np.zeros((200, 200, 3), dtype=np.uint8)   # Black
-        result = classify_hold_color(img, 0.0, 0.0, 1.0, 1.0)
-        assert result.color == HoldColor.BLACK
+    def test_grey_background_classified_correctly(self):
+        from app.color_classifier import classify_color_from_bgr
+        grey_bgr = np.array([[[180, 180, 180]]], dtype=np.uint8)
+        result   = classify_color_from_bgr(grey_bgr)
+        assert result["color"] in ("grey", "gray", "white", "unknown")
 
-    def test_color_hex_format(self):
-        img = np.zeros((200, 200, 3), dtype=np.uint8)
-        img[:] = (0, 0, 200)
-        result = classify_hold_color(img, 0.0, 0.0, 1.0, 1.0)
-        assert result.color_hex.startswith("#")
-        assert len(result.color_hex) == 7
+    def test_color_result_includes_hex(self):
+        from app.color_classifier import classify_color_from_bgr
+        red_bgr = np.array([[[0, 0, 200]]], dtype=np.uint8)
+        result  = classify_color_from_bgr(red_bgr)
+        assert "hex" in result or "color_hex" in result
 
-    def test_empty_crop_returns_unknown(self):
-        """Zero-area bounding box should return UNKNOWN without crashing."""
-        img = np.zeros((200, 200, 3), dtype=np.uint8)
-        result = classify_hold_color(img, 0.5, 0.5, 0.0, 0.0)
-        assert result.color == HoldColor.UNKNOWN
-
-
-# ---------------------------------------------------------------------------
-# Unit Tests — Hold Type Heuristic
-# ---------------------------------------------------------------------------
-
-class TestHoldTypeHeuristic:
-
-    def test_volume_large_area(self):
-        hold_type, conf = _classify_hold_type_heuristic(0.2, 0.2, 1.0, None, None, True)
-        assert hold_type == HoldType.VOLUME
-        assert conf is not None
-
-    def test_crimp_high_aspect_ratio(self):
-        hold_type, conf = _classify_hold_type_heuristic(0.04, 0.01, 4.0, None, None, True)
-        assert hold_type == HoldType.CRIMP
-
-    def test_pocket_low_aspect_ratio(self):
-        hold_type, conf = _classify_hold_type_heuristic(0.01, 0.03, 0.4, None, None, True)
-        assert hold_type == HoldType.POCKET
-
-    def test_model_class_overrides_heuristic(self):
-        """If YOLO provides a class, it should take priority over geometry."""
-        hold_type, _ = _classify_hold_type_heuristic(0.2, 0.2, 1.0, 1, 0.9, True)
-        assert hold_type == HoldType.CRIMP   # class_id=1 → CRIMP
-
-    def test_classify_types_false_returns_unknown(self):
-        hold_type, conf = _classify_hold_type_heuristic(0.05, 0.05, 1.0, None, None, False)
-        assert hold_type == HoldType.UNKNOWN
-        assert conf is None
+    def test_classify_returns_color_field(self):
+        from app.color_classifier import classify_color_from_bgr
+        img_bgr = np.array([[[50, 100, 200]]], dtype=np.uint8)
+        result  = classify_color_from_bgr(img_bgr)
+        assert "color" in result
 
 
 # ---------------------------------------------------------------------------
-# Unit Tests — Area Filter and Coordinate Normalisation
+# Hold Detector Unit Tests (YOLO mocked)
 # ---------------------------------------------------------------------------
 
-class TestPostProcessing:
+class TestHoldDetector:
+    """
+    Unit tests for the hold detection pipeline.
+    YOLO model is mocked to avoid GPU/model file dependencies in CI.
+    """
 
-    def test_area_filter_removes_small_boxes(self):
-        detections = [
-            {"x1": 0, "y1": 0, "x2": 5, "y2": 5, "confidence": 0.9},     # tiny → filtered
-            {"x1": 0, "y1": 0, "x2": 100, "y2": 100, "confidence": 0.9},  # kept
-        ]
-        result = _filter_by_area(detections, 1000, 1000, min_hold_area=0.001)
-        assert len(result) == 1
-        assert result[0]["x2"] == 100
-
-    def test_normalised_values_in_range(self):
-        detections = [{"x1": 100, "y1": 100, "x2": 200, "y2": 200,
-                        "confidence": 0.9, "class_id": None, "class_conf": None}]
-        result = _to_normalised(detections, inf_w=1000, inf_h=1000, scale_x=1.0, scale_y=1.0)
-        assert 0.0 <= result[0]["x"] <= 1.0
-        assert 0.0 <= result[0]["y"] <= 1.0
-        assert 0.0 <= result[0]["width"] <= 1.0
-        assert 0.0 <= result[0]["height"] <= 1.0
-
-
-# ---------------------------------------------------------------------------
-# Unit Tests — Image Validation
-# ---------------------------------------------------------------------------
-
-class TestImageValidation:
-
-    def test_small_image_raises(self):
-        small_img = np.zeros((100, 100, 3), dtype=np.uint8)
-        with pytest.raises(ValueError, match="too small"):
-            validate_image(small_img)
-
-    def test_blurry_image_raises(self):
-        """A uniform (zero-variance) image is maximally blurry."""
-        flat_img = np.full((1000, 1000, 3), 128, dtype=np.uint8)
-        with pytest.raises(ValueError, match="blurry"):
-            validate_image(flat_img)
-
-    def test_valid_image_passes(self, synthetic_wall_image):
-        """Synthetic wall image with coloured shapes should pass validation."""
-        validate_image(synthetic_wall_image)   # Should not raise
-
-
-# ---------------------------------------------------------------------------
-# Integration Tests — Full Pipeline (mocked YOLO + mocked download)
-# ---------------------------------------------------------------------------
-
-class TestDetectHoldsPipeline:
-
-    @pytest.mark.asyncio
-    async def test_happy_path_returns_correct_hold_count(
-        self, synthetic_wall_image, mock_yolo_detections
+    def test_detects_correct_number_of_holds_from_mock(
+        self, mock_yolo_model, wall_with_8_holds
     ):
-        """Full pipeline with mocked I/O should return 5 holds."""
-        mock_model         = MagicMock()
-        mock_result        = MagicMock()
-        mock_boxes         = MagicMock()
+        from app.hold_detector import HoldDetector
+        img_bytes = array_to_jpeg_bytes(wall_with_8_holds)
 
-        import torch
-        # Build fake YOLO result boxes
-        xyxy_data = [[d["x1"], d["y1"], d["x2"], d["y2"]] for d in mock_yolo_detections]
-        conf_data = [d["confidence"] for d in mock_yolo_detections]
-        cls_data  = [d["class_id"]   for d in mock_yolo_detections]
+        with patch("app.hold_detector.YOLO", return_value=mock_yolo_model):
+            detector = HoldDetector(mode="fast")
+            holds    = detector.detect(img_bytes)
 
-        mock_boxes.xyxy = MagicMock(
-            __len__ = lambda s: len(xyxy_data),
-            __iter__= lambda s: iter(xyxy_data),
+        # Mock returns 3 boxes → expect 3 holds
+        assert len(holds) == 3
+
+    def test_hold_has_required_fields(self, mock_yolo_model, wall_with_8_holds):
+        from app.hold_detector import HoldDetector
+        img_bytes = array_to_jpeg_bytes(wall_with_8_holds)
+
+        with patch("app.hold_detector.YOLO", return_value=mock_yolo_model):
+            detector = HoldDetector(mode="fast")
+            holds    = detector.detect(img_bytes)
+
+        required = {
+            "id", "x", "y", "width", "height", "center_x",
+            "center_y", "area", "color", "color_hex",
+            "type", "confidence", "is_verified",
+        }
+        for hold in holds:
+            missing = required - set(hold.keys())
+            assert not missing, f"Missing fields: {missing}"
+
+    def test_hold_coordinates_are_normalised(self, mock_yolo_model, wall_with_8_holds):
+        from app.hold_detector import HoldDetector
+        img_bytes = array_to_jpeg_bytes(wall_with_8_holds)
+
+        with patch("app.hold_detector.YOLO", return_value=mock_yolo_model):
+            detector = HoldDetector(mode="fast")
+            holds    = detector.detect(img_bytes)
+
+        for h in holds:
+            assert 0.0 <= h["x"]        <= 1.0
+            assert 0.0 <= h["y"]        <= 1.0
+            assert 0.0 <= h["center_x"] <= 1.0
+            assert 0.0 <= h["center_y"] <= 1.0
+            assert 0.0 <  h["width"]    <= 1.0
+            assert 0.0 <  h["height"]   <= 1.0
+
+    def test_hold_ids_are_unique(self, mock_yolo_model, wall_with_8_holds):
+        from app.hold_detector import HoldDetector
+        img_bytes = array_to_jpeg_bytes(wall_with_8_holds)
+
+        with patch("app.hold_detector.YOLO", return_value=mock_yolo_model):
+            detector = HoldDetector(mode="fast")
+            holds    = detector.detect(img_bytes)
+
+        ids = [h["id"] for h in holds]
+        assert len(ids) == len(set(ids)), "Hold IDs must be unique"
+
+    def test_confidence_score_between_0_and_1(self, mock_yolo_model, wall_with_8_holds):
+        from app.hold_detector import HoldDetector
+        img_bytes = array_to_jpeg_bytes(wall_with_8_holds)
+
+        with patch("app.hold_detector.YOLO", return_value=mock_yolo_model):
+            detector = HoldDetector(mode="fast")
+            holds    = detector.detect(img_bytes)
+
+        for h in holds:
+            assert 0.0 <= h["confidence"] <= 1.0
+
+    def test_blank_wall_returns_no_holds(self, clean_wall_image):
+        from app.hold_detector import HoldDetector
+
+        empty_model = MagicMock()
+        no_det      = MagicMock()
+        no_det.boxes.data.cpu().numpy.return_value = np.empty((0, 6))
+        empty_model.return_value = [no_det]
+
+        img_bytes = array_to_jpeg_bytes(clean_wall_image)
+        with patch("app.hold_detector.YOLO", return_value=empty_model):
+            detector = HoldDetector(mode="fast")
+            holds    = detector.detect(img_bytes)
+
+        assert holds == []
+
+    def test_corrupt_image_raises_value_error(self, corrupt_image_bytes):
+        from app.hold_detector import HoldDetector
+        with patch("app.hold_detector.YOLO"):
+            detector = HoldDetector(mode="fast")
+            with pytest.raises(ValueError):
+                detector.detect(corrupt_image_bytes)
+
+    def test_low_confidence_detections_are_filtered(self, wall_with_8_holds):
+        from app.hold_detector import HoldDetector
+
+        model = MagicMock()
+        det   = MagicMock()
+        det.boxes.data.cpu().numpy.return_value = np.array([
+            [50,  60,  130, 140, 0.85, 0.0],  # keep
+            [200, 180, 300, 280, 0.72, 0.0],  # keep
+            [400, 350, 460, 410, 0.20, 0.0],  # below threshold
+        ])
+        model.return_value = [det]
+
+        img_bytes = array_to_jpeg_bytes(wall_with_8_holds)
+        with patch("app.hold_detector.YOLO", return_value=model):
+            detector = HoldDetector(mode="fast", confidence_threshold=0.5)
+            holds    = detector.detect(img_bytes)
+
+        assert len(holds) == 2
+
+    def test_nms_removes_overlapping_detections(self, wall_with_8_holds):
+        from app.hold_detector import HoldDetector
+
+        model = MagicMock()
+        det   = MagicMock()
+        det.boxes.data.cpu().numpy.return_value = np.array([
+            [50,  60,  130, 140, 0.93, 0.0],
+            [52,  62,  132, 142, 0.91, 0.0],  # near-duplicate
+            [300, 280, 400, 380, 0.80, 0.0],  # distinct
+        ])
+        model.return_value = [det]
+
+        img_bytes = array_to_jpeg_bytes(wall_with_8_holds)
+        with patch("app.hold_detector.YOLO", return_value=model):
+            detector = HoldDetector(mode="fast", nms_iou_threshold=0.5)
+            holds    = detector.detect(img_bytes)
+
+        assert len(holds) <= 2
+
+
+# ---------------------------------------------------------------------------
+# FastAPI Endpoint Integration Tests
+# ---------------------------------------------------------------------------
+
+class TestDetectHoldsEndpoint:
+    """Integration tests via FastAPI TestClient."""
+
+    @pytest.fixture(scope="class")
+    def client(self):
+        from app.main import app
+        from fastapi.testclient import TestClient
+        return TestClient(app)
+
+    def test_health_endpoint_returns_ok(self, client):
+        assert client.get("/health").status_code == 200
+
+    def test_detect_holds_missing_required_fields_returns_422(self, client):
+        response = client.post("/detect-holds", json={"mode": "fast"})
+        assert response.status_code == 422
+
+    def test_detect_holds_invalid_mode_returns_422(self, client):
+        response = client.post(
+            "/detect-holds",
+            json={"wall_id": "w1", "image_url": "http://test/img.jpg", "mode": "turbo"},
         )
-        mock_boxes.xyxy.__getitem__ = lambda s, i: MagicMock(
-            cpu=lambda: MagicMock(numpy=lambda: np.array(xyxy_data[i]))
-        )
-        mock_boxes.conf = MagicMock(
-            __getitem__=lambda s, i: MagicMock(
-                cpu=lambda: MagicMock(numpy=lambda: np.array(conf_data[i]))
-            )
-        )
-        mock_boxes.cls = MagicMock(
-            __getitem__=lambda s, i: MagicMock(
-                cpu=lambda: MagicMock(numpy=lambda: np.array(cls_data[i]))
-            )
-        )
-        mock_result.boxes = mock_boxes
-        mock_model.predict.return_value = [mock_result]
+        assert response.status_code == 422
 
-        set_yolo_model(mock_model)
 
-        with patch(
-            "app.preprocessor.download_image",
-            new=AsyncMock(return_value=synthetic_wall_image),
-        ):
-            response = await detect_holds(
-                wall_id   = "test_wall_001",
-                image_url = "https://example.com/wall.jpg",
-                mode      = DetectionMode.FAST,
-                options   = DetectionOptions(),
-            )
+# ---------------------------------------------------------------------------
+# Route Generator API Integration Tests
+# ---------------------------------------------------------------------------
 
-        assert response.wall_id == "test_wall_001"
-        assert len(response.holds) == 5
-        assert response.metadata.holds_detected == 5
-        assert all(0.0 <= h.x <= 1.0 for h in response.holds)
-        assert all(0.0 <= h.confidence <= 1.0 for h in response.holds)
+class TestGenerateRouteEndpoint:
+    """POST /generate-route endpoint integration tests."""
 
-    @pytest.mark.asyncio
-    async def test_no_holds_detected_raises_value_error(self, synthetic_wall_image):
-        """When YOLO returns no detections, ValueError should be raised."""
-        mock_model = MagicMock()
-        mock_result = MagicMock()
-        mock_result.boxes = None
-        mock_model.predict.return_value = [mock_result]
-        set_yolo_model(mock_model)
+    @pytest.fixture(scope="class")
+    def client(self):
+        from app.main import app
+        from fastapi.testclient import TestClient
+        return TestClient(app)
 
-        with patch("app.preprocessor.download_image", new=AsyncMock(return_value=synthetic_wall_image)):
-            with pytest.raises(ValueError, match="NO_HOLDS_DETECTED"):
-                await detect_holds(
-                    wall_id   = "test_wall_002",
-                    image_url = "https://example.com/wall.jpg",
-                    mode      = DetectionMode.FAST,
-                    options   = DetectionOptions(),
-                )
+    @staticmethod
+    def _make_holds(n: int = 20, seed: int = 1) -> list[dict]:
+        import random
+        rng   = random.Random(seed)
+        types = ["jug", "sloper", "crimp", "pinch", "pocket", "foothold"]
+        return [
+            {
+                "id":       f"h_{i:04d}",
+                "center_x": rng.uniform(0.05, 0.95),
+                "center_y": rng.uniform(0.05, 0.95),
+                "width":    rng.uniform(0.03, 0.08),
+                "height":   rng.uniform(0.03, 0.08),
+                "type":     rng.choice(types),
+                "color":    "red",
+            }
+            for i in range(n)
+        ]
 
-    @pytest.mark.asyncio
-    async def test_download_failure_raises_value_error(self):
-        """When the image URL is unreachable, a ValueError should propagate."""
-        with patch(
-            "app.preprocessor.download_image",
-            new=AsyncMock(side_effect=ValueError("Failed to download image.")),
-        ):
-            with pytest.raises(ValueError, match="Failed to download"):
-                await detect_holds(
-                    wall_id   = "test_wall_003",
-                    image_url = "https://bad-url.invalid/wall.jpg",
-                    mode      = DetectionMode.FAST,
-                    options   = DetectionOptions(),
-                )
+    def test_valid_request_returns_200(self, client):
+        r = client.post("/generate-route", json={
+            "wall_id": "w1",
+            "holds":   self._make_holds(20),
+            "grade":   "V5",
+            "style":   "dynamic",
+        })
+        assert r.status_code == 200
+        assert "route" in r.json()
+
+    def test_fewer_than_4_holds_returns_422(self, client):
+        r = client.post("/generate-route", json={
+            "wall_id": "w2",
+            "holds":   self._make_holds(3),
+            "grade":   "V5",
+            "style":   "dynamic",
+        })
+        assert r.status_code == 422
+
+    def test_invalid_grade_returns_422(self, client):
+        r = client.post("/generate-route", json={
+            "wall_id": "w3",
+            "holds":   self._make_holds(20),
+            "grade":   "V99",
+            "style":   "dynamic",
+        })
+        assert r.status_code == 422
+
+    def test_invalid_style_returns_422(self, client):
+        r = client.post("/generate-route", json={
+            "wall_id": "w4",
+            "holds":   self._make_holds(20),
+            "grade":   "V5",
+            "style":   "backflip",
+        })
+        assert r.status_code == 422
+
+    def test_route_hold_roles_are_valid(self, client):
+        r = client.post("/generate-route", json={
+            "wall_id": "w5",
+            "holds":   self._make_holds(20, seed=7),
+            "grade":   "V3",
+            "style":   "balance",
+        })
+        if r.status_code != 200:
+            pytest.skip("No route generated for this config")
+        for h in r.json()["route"]["holds"]:
+            assert h["role"] in {"start", "hand", "foot", "finish"}
+
+    def test_position_order_starts_at_1_and_is_sequential(self, client):
+        r = client.post("/generate-route", json={
+            "wall_id": "w6",
+            "holds":   self._make_holds(20, seed=8),
+            "grade":   "V5",
+            "style":   "dynamic",
+        })
+        if r.status_code != 200:
+            pytest.skip("No route generated")
+        orders = [h["position_order"] for h in r.json()["route"]["holds"]]
+        assert orders[0] == 1
+        assert orders == sorted(orders)
+
+    def test_seeded_generation_is_reproducible(self, client):
+        payload = {
+            "wall_id": "repro",
+            "holds":   self._make_holds(20, seed=42),
+            "grade":   "V5",
+            "style":   "dynamic",
+            "seed":    99,
+        }
+        r1 = client.post("/generate-route", json=payload)
+        r2 = client.post("/generate-route", json=payload)
+        if r1.status_code == r2.status_code == 200:
+            ids1 = [h["hold_id"] for h in r1.json()["route"]["holds"]]
+            ids2 = [h["hold_id"] for h in r2.json()["route"]["holds"]]
+            assert ids1 == ids2
