@@ -1,0 +1,149 @@
+/* WallDetail.css */
+
+/* ── Upload Page ─────────────────────────────────────────────────────────── */
+.upload-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-16) var(--space-6);
+  min-height: calc(100vh - 60px);
+  justify-content: center;
+}
+.upload-hero { text-align: center; max-width: 560px; }
+.upload-hero-title {
+  font-size: clamp(2rem, 5vw, 3.2rem);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.04em;
+  margin-bottom: var(--space-4);
+}
+.gradient-text {
+  background: linear-gradient(135deg, var(--accent-orange) 0%, var(--accent-red) 50%, var(--accent-purple) 100%);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: gradientShift 4s ease infinite;
+}
+.upload-hero-sub {
+  font-size: 1.05rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+/* ── Wall Detail Layout ───────────────────────────────────────────────────── */
+.wall-detail-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.wall-detail-layout {
+  display: flex;
+  gap: var(--space-6);
+  padding: var(--space-6);
+  align-items: flex-start;
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* ── Wall Map Column ─────────────────────────────────────────────────────── */
+.wall-map-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+/* ── Banners ─────────────────────────────────────────────────────────────── */
+.scan-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: rgba(249, 115, 22, 0.1);
+  border: 1px solid rgba(249, 115, 22, 0.25);
+  border-radius: var(--radius-lg);
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  animation: fadeIn 0.3s ease;
+}
+.scan-banner-spinner {
+  width: 16px; height: 16px;
+  border: 2px solid rgba(249,115,22,0.3);
+  border-top-color: var(--accent-orange);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.error-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: var(--radius-lg);
+  font-size: 0.875rem;
+  color: var(--text-primary);
+}
+
+/* ── Hold Hint ───────────────────────────────────────────────────────────── */
+.hold-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  background: var(--bg-muted);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+.hold-hint-count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+/* ── Navbar extras ───────────────────────────────────────────────────────── */
+.navbar-wall-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: 0.875rem;
+}
+.navbar-wall-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.navbar-actions { display: flex; align-items: center; gap: var(--space-3); }
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .wall-detail-layout {
+    flex-direction: column;
+    padding: var(--space-4);
+  }
+  .wall-map-column { width: 100%; }
+}
+@media (max-width: 600px) {
+  .upload-page { padding: var(--space-8) var(--space-4); }
+  .navbar-wall-info { display: none; }
+}

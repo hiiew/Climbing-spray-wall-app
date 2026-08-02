@@ -1,0 +1,229 @@
+/* HoldMapOverlay.css */
+
+/* ── Container ───────────────────────────────────────────────────────────── */
+.hold-map-container {
+  position: relative;
+  width: 100%;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+  user-select: none;
+}
+
+/* ── Wall Image ──────────────────────────────────────────────────────────── */
+.hold-map-image {
+  width: 100%;
+  height: auto;
+  display: block;
+  object-fit: contain;
+}
+
+/* ── SVG Overlay ─────────────────────────────────────────────────────────── */
+.hold-map-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none; /* Container handles pointer; groups re-enable */
+}
+.hold-map-svg .hold-group {
+  pointer-events: all;
+  cursor: pointer;
+  animation: holdPop 0.4s var(--transition-spring) both;
+}
+.hold-map-svg .hold-group:focus-visible .hold-ellipse {
+  outline: none;
+  stroke: white;
+  stroke-width: 0.005;
+}
+
+/* ── Hold States ─────────────────────────────────────────────────────────── */
+.hold-ellipse {
+  transition: stroke-width 0.15s ease, filter 0.15s ease;
+}
+.hold-group:hover .hold-ellipse {
+  stroke-width: 0.004 !important;
+}
+.hold-group.hold-excluded .hold-ellipse {
+  opacity: 0.35;
+}
+.hold-group.hold-hovered .hold-ellipse {
+  filter: brightness(1.25);
+}
+
+/* Role-specific ring pulse */
+.hold-group.hold-role-start .hold-ellipse  { stroke: var(--role-start);  }
+.hold-group.hold-role-hand .hold-ellipse   { stroke: var(--role-hand);   }
+.hold-group.hold-role-foot .hold-ellipse   { stroke: var(--role-foot);   }
+.hold-group.hold-role-finish .hold-ellipse { stroke: var(--role-finish); }
+
+.hold-role-text {
+  pointer-events: none;
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+}
+.hold-order-text {
+  pointer-events: none;
+  background: var(--bg-base);
+  border-radius: 50%;
+}
+
+/* ── Scanning Overlay ────────────────────────────────────────────────────── */
+.scanning-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 12, 20, 0.55);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.scan-line {
+  position: absolute;
+  left: 0; right: 0;
+  height: 3px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    var(--accent-orange) 20%,
+    rgba(249, 115, 22, 0.9) 50%,
+    var(--accent-orange) 80%,
+    transparent 100%
+  );
+  box-shadow: 0 0 16px 4px rgba(249, 115, 22, 0.6);
+  animation: scanLine 2.2s ease-in-out infinite;
+  top: 0;
+}
+.scanning-badge {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-full);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  box-shadow: var(--shadow-md);
+}
+.scanning-spinner {
+  width: 16px; height: 16px;
+  border: 2px solid rgba(249, 115, 22, 0.3);
+  border-top-color: var(--accent-orange);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+/* ── Scan Failed ─────────────────────────────────────────────────────────── */
+.scan-failed-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  background: rgba(8, 12, 20, 0.7);
+  backdrop-filter: blur(4px);
+  text-align: center;
+  padding: var(--space-6);
+  color: var(--text-secondary);
+}
+.scan-failed-icon { font-size: 2.5rem; }
+
+/* ── Tooltip ─────────────────────────────────────────────────────────────── */
+.hold-tooltip {
+  position: absolute;
+  transform: translateX(-50%) translateY(-100%);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.78rem;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: var(--shadow-md);
+  z-index: 20;
+  animation: fadeIn 0.12s ease;
+  color: var(--text-primary);
+}
+.hold-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%; left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: var(--border-strong);
+}
+.tooltip-type {
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.tooltip-color-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.2);
+  flex-shrink: 0;
+}
+.tooltip-color { color: var(--text-secondary); text-transform: capitalize; }
+.tooltip-unverified {
+  color: var(--accent-yellow);
+  font-size: 0.72rem;
+}
+.tooltip-hint {
+  color: var(--text-muted);
+  border-left: 1px solid var(--border-subtle);
+  padding-left: var(--space-2);
+  font-size: 0.72rem;
+}
+
+/* ── Legend ──────────────────────────────────────────────────────────────── */
+.hold-map-legend {
+  position: absolute;
+  bottom: var(--space-3);
+  left: var(--space-3);
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-full);
+  animation: fadeIn 0.3s ease;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.73rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.legend-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ── Hold Count Badge ────────────────────────────────────────────────────── */
+.hold-count-badge {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-full);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}

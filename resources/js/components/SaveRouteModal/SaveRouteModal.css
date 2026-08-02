@@ -1,0 +1,151 @@
+/* SaveRouteModal.css */
+
+/* ── Backdrop ────────────────────────────────────────────────────────────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  animation: fadeIn 0.2s ease;
+}
+
+/* ── Dialog ──────────────────────────────────────────────────────────────── */
+.modal-dialog {
+  width: 100%;
+  max-width: 480px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg), 0 0 60px rgba(0,0,0,0.4);
+  animation: modalIn 0.25s var(--transition-spring);
+  overflow: hidden;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-5) var(--space-6);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.modal-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.modal-close {
+  color: var(--text-muted) !important;
+  font-size: 1rem;
+  padding: var(--space-1) var(--space-2);
+}
+.modal-close:hover { color: var(--text-primary) !important; }
+
+/* ── Body ────────────────────────────────────────────────────────────────── */
+.modal-body {
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.modal-desc {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.modal-route-meta {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* ── Publish Toggle ──────────────────────────────────────────────────────── */
+.publish-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  cursor: pointer;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-muted);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  transition: border-color var(--transition-fast);
+}
+.publish-toggle:has(.toggle-checkbox:checked) {
+  border-color: rgba(34, 197, 94, 0.3);
+  background: rgba(34, 197, 94, 0.05);
+}
+.toggle-checkbox { display: none; }
+
+.toggle-track {
+  width: 40px; height: 22px;
+  border-radius: var(--radius-full);
+  background: var(--bg-base);
+  border: 1px solid var(--border-default);
+  position: relative;
+  flex-shrink: 0;
+  transition: background var(--transition-base);
+}
+.publish-toggle:has(.toggle-checkbox:checked) .toggle-track {
+  background: var(--accent-green);
+  border-color: var(--accent-green);
+}
+.toggle-thumb {
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--transition-spring);
+}
+.publish-toggle:has(.toggle-checkbox:checked) .toggle-thumb {
+  transform: translateX(18px);
+}
+.toggle-label { display: flex; flex-direction: column; gap: 1px; }
+.toggle-title  { font-size: 0.875rem; font-weight: 600; }
+.toggle-hint   { font-size: 0.75rem; color: var(--text-muted); }
+
+/* ── Share View ──────────────────────────────────────────────────────────── */
+.share-view {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  text-align: center;
+  animation: fadeIn 0.3s ease;
+}
+.share-success-icon { font-size: 3rem; animation: holdPop 0.4s var(--transition-spring); }
+.share-success-title {
+  font-size: 1.2rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--accent-green), var(--accent-blue));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.share-success-desc { font-size: 0.875rem; color: var(--text-secondary); }
+.share-url-row { display: flex; gap: var(--space-2); width: 100%; }
+.share-url-input { font-family: var(--font-mono); font-size: 0.8rem; cursor: text; }
+.share-copy-btn { flex-shrink: 0; white-space: nowrap; }
+.copy-confirm {
+  font-size: 0.8rem;
+  color: var(--accent-green);
+  font-weight: 600;
+  animation: fadeIn 0.2s ease;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+.modal-footer {
+  display: flex;
+  gap: var(--space-3);
+  justify-content: flex-end;
+  padding: var(--space-4) var(--space-6);
+  border-top: 1px solid var(--border-subtle);
+  background: rgba(0,0,0,0.1);
+}

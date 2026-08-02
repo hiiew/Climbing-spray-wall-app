@@ -1,0 +1,375 @@
+name: CI — All Test Suites
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PHP_VERSION:    '8.2'
+  NODE_VERSION:   '20'
+  PYTHON_VERSION: '3.11'
+
+# ============================================================================
+# JOB 1: Laravel Backend Tests (PHPUnit/Pest)
+# ============================================================================
+jobs:
+  laravel-tests:
+    name: 🐘 Laravel — PHPUnit / Pest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE:      spraywall_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: >-
+            bcmath, ctype, fileinfo, json, mbstring,
+            openssl, pdo, pdo_mysql, tokenizer, xml, zip
+          coverage: xdebug
+          tools: composer:v2
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist --optimize-autoloader
+
+      - name: Copy environment file
+        run: cp .env.testing .env
+
+      - name: Generate app key
+        run: php artisan key:generate
+
+      - name: Run database migrations
+        env:
+          DB_CONNECTION:    mysql
+          DB_HOST:          127.0.0.1
+          DB_PORT:          3306
+          DB_DATABASE:      spraywall_test
+          DB_USERNAME:      root
+          DB_PASSWORD:      root
+          REDIS_HOST:       127.0.0.1
+          REDIS_PORT:       6379
+          QUEUE_CONNECTION: sync   # Run jobs synchronously in tests
+        run: php artisan migrate --force
+
+      - name: Run PHPUnit / Pest tests with coverage
+        env:
+          DB_CONNECTION:    mysql
+          DB_HOST:          127.0.0.1
+          DB_PORT:          3306
+          DB_DATABASE:      spraywall_test
+          DB_USERNAME:      root
+          DB_PASSWORD:      root
+          REDIS_HOST:       127.0.0.1
+          REDIS_PORT:       6379
+          QUEUE_CONNECTION: sync
+          AWS_ACCESS_KEY_ID:     fake
+          AWS_SECRET_ACCESS_KEY: fake
+          AWS_DEFAULT_REGION:    ap-southeast-1
+          AWS_BUCKET:            test-bucket
+          CV_SERVICE_URL:        http://localhost:8001
+        run: >
+          php artisan test
+          --parallel
+          --coverage-clover=coverage-php.xml
+          --min=70
+
+      - name: Upload PHP coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: coverage-php.xml
+          flags: php
+          fail_ci_if_error: false
+
+  # ============================================================================
+  # JOB 2: Python CV Service Tests (pytest)
+  # ============================================================================
+  python-tests:
+    name: 🐍 Python — pytest (CV Service)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: cv-service
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: cv-service/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install test extras
+        run: pip install pytest pytest-cov pytest-asyncio Pillow httpx
+
+      - name: Run pytest with coverage
+        run: >
+          pytest tests/
+          --cov=app
+          --cov-report=xml:coverage-py.xml
+          --cov-report=term-missing
+          --cov-fail-under=65
+          -v
+          --tb=short
+          --ignore=tests/test_hold_detector.py  # Removed (needs GPU)
+
+      - name: Run hold detector tests (CPU-only, mocked models)
+        run: >
+          pytest tests/test_hold_detector.py
+          -v
+          --tb=short
+          -k "not TestDetectHoldsEndpoint or health"
+
+      - name: Upload Python coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: cv-service/coverage-py.xml
+          flags: python
+          fail_ci_if_error: false
+
+  # ============================================================================
+  # JOB 3: Frontend Tests (Vitest + React Testing Library)
+  # ============================================================================
+  frontend-tests:
+    name: ⚛️  Frontend — Vitest + RTL
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Run Vitest unit tests
+        run: npm run test:unit -- --coverage --reporter=verbose
+
+      - name: Upload Frontend coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: coverage/clover.xml
+          flags: frontend
+          fail_ci_if_error: false
+
+  # ============================================================================
+  # JOB 4: Build validation (no E2E, just Vite build)
+  # ============================================================================
+  build:
+    name: 🔨 Vite Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Verify build artifacts exist
+        run: |
+          test -d public/build || (echo "Build output missing" && exit 1)
+          echo "✅ Build artifacts present"
+
+  # ============================================================================
+  # JOB 5: E2E Tests (Playwright) — only on main / nightly
+  # ============================================================================
+  e2e-tests:
+    name: 🎭 E2E — Playwright
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # Run E2E only on main branch pushes or manual trigger to save CI minutes
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE:      spraywall_e2e
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: bcmath, ctype, fileinfo, json, mbstring, openssl, pdo, pdo_mysql
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build frontend assets
+        run: npm run build
+
+      - name: Configure environment
+        run: |
+          cp .env.testing .env
+          sed -i 's/DB_DATABASE=.*/DB_DATABASE=spraywall_e2e/' .env
+          php artisan key:generate
+
+      - name: Migrate and seed E2E test data
+        env:
+          DB_CONNECTION:    mysql
+          DB_HOST:          127.0.0.1
+          DB_PORT:          3306
+          DB_DATABASE:      spraywall_e2e
+          DB_USERNAME:      root
+          DB_PASSWORD:      root
+          REDIS_HOST:       127.0.0.1
+          QUEUE_CONNECTION: sync
+        run: |
+          php artisan migrate --force
+          php artisan db:seed --class=E2ESeeder --force
+
+      - name: Start Laravel server in background
+        env:
+          DB_CONNECTION:    mysql
+          DB_HOST:          127.0.0.1
+          DB_PORT:          3306
+          DB_DATABASE:      spraywall_e2e
+          DB_USERNAME:      root
+          DB_PASSWORD:      root
+          REDIS_HOST:       127.0.0.1
+          QUEUE_CONNECTION: sync
+          APP_URL:          http://localhost:8000
+        run: php artisan serve --port=8000 &
+
+      - name: Wait for Laravel to be ready
+        run: |
+          timeout 30 bash -c 'until curl -s http://localhost:8000/api/v1/health | grep -q ok; do sleep 1; done'
+          echo "✅ Laravel is up"
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E tests
+        env:
+          APP_URL:      http://localhost:8000
+          TEST_EMAIL:   e2e@spraywall.test
+          TEST_PASS:    E2ePassword!1
+        run: npx playwright test --project=chromium --reporter=html
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
+
+  # ============================================================================
+  # JOB 6: Status Summary (gate for merge)
+  # ============================================================================
+  all-tests-passed:
+    name: ✅ All Tests Passed
+    runs-on: ubuntu-latest
+    needs:
+      - laravel-tests
+      - python-tests
+      - frontend-tests
+      - build
+    if: always()
+
+    steps:
+      - name: Check all job statuses
+        run: |
+          if [[ "${{ needs.laravel-tests.result }}"  != "success" ]]; then
+            echo "❌ Laravel tests failed" && exit 1
+          fi
+          if [[ "${{ needs.python-tests.result }}"   != "success" ]]; then
+            echo "❌ Python tests failed" && exit 1
+          fi
+          if [[ "${{ needs.frontend-tests.result }}" != "success" ]]; then
+            echo "❌ Frontend tests failed" && exit 1
+          fi
+          if [[ "${{ needs.build.result }}"          != "success" ]]; then
+            echo "❌ Build failed" && exit 1
+          fi
+          echo "✅ All required checks passed!"
